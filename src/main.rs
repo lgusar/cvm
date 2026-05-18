@@ -21,8 +21,6 @@ fn main() {
 
     let pool = get_pool(&conn).unwrap();
 
-    // TODO: create new image file volume in the storage disk
-
     let volume = volume::create_volume(&pool, "test.qcow2").unwrap();
     // TODO: create cloud init iso image with cloud-localds
 

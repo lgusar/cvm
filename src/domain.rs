@@ -1,9 +1,11 @@
-use log::debug;
+use std::{error::Error, fmt::Display, thread::sleep, time};
+
+use log::{debug, info};
 use quick_xml::se::to_string;
 use serde::{Deserialize, Serialize};
 use virt::{
     connect::Connect, domain::Domain as VirtDomain, storage_pool::StoragePool,
-    storage_vol::StorageVol,
+    storage_vol::StorageVol, sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
 };
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -82,11 +84,27 @@ pub struct InterfaceSource {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename = "model")]
+pub struct InterfaceModel {
+    #[serde(rename = "@type")]
+    model_type: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "disk")]
 pub struct Interface {
     #[serde(rename = "@type")]
     interface_type: String,
     source: InterfaceSource,
+    model: InterfaceModel,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct Graphics {
+    #[serde(rename = "@type")]
+    graphics_type: String,
+    #[serde(rename = "@autoport")]
+    autoport: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -97,6 +115,7 @@ pub struct Devices {
 
     #[serde(default)]
     interface: Vec<Interface>,
+    graphics: Vec<Graphics>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -111,12 +130,27 @@ pub struct Domain {
     devices: Devices,
 }
 
+#[derive(Debug)]
+enum VmError {
+    IpAddressTimeout,
+}
+
+impl Display for VmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VmError::IpAddressTimeout => write!(f, "IP address wait timeout"),
+        }
+    }
+}
+
+impl Error for VmError {}
+
 pub fn create_vm(
     conn: &Connect,
     name: &str,
     pool: &StoragePool,
     volume: &StorageVol,
-) -> Result<VirtDomain, Box<dyn std::error::Error>> {
+) -> Result<VirtDomain, Box<dyn Error>> {
     debug!(
         "Creating new VM {} on storage pool {} and volume {}",
         name,
@@ -144,7 +178,7 @@ pub fn create_vm(
                 disk_type: "volume".into(),
                 driver: Driver {
                     name: "qemu".into(),
-                    driver_type: "raw".into(),
+                    driver_type: "qcow2".into(),
                 },
                 source: DiskSource {
                     pool: pool.get_name()?,
@@ -155,7 +189,20 @@ pub fn create_vm(
                     bus: "virtio".into(),
                 },
             }],
-            interface: vec![],
+            interface: vec![Interface {
+                interface_type: "network".into(),
+                source: InterfaceSource {
+                    // TODO: revisit what network to use
+                    network: "default".into(),
+                },
+                model: InterfaceModel {
+                    model_type: "virtio".into(),
+                },
+            }],
+            graphics: vec![Graphics {
+                graphics_type: "spice".into(),
+                autoport: "yes".into(),
+            }],
         },
     };
 
@@ -165,8 +212,30 @@ pub fn create_vm(
 
     let dom = VirtDomain::define_xml(conn, &xml)?;
 
-    debug!("Successfully created {}", dom.get_name()?);
+    debug!("Created {}", dom.get_name()?);
     dom.create()?;
+
+    let mut timeout = 30; // try to fetch IP address of the VM for 30s
+    while timeout > 0 {
+        let ifaces = dom.interface_addresses(VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE, 0)?;
+        if ifaces.is_empty() {
+            timeout -= 1;
+            sleep(time::Duration::from_secs(1));
+            continue;
+        }
+
+        for iface in ifaces {
+            for addr in iface.addrs {
+                info!("{}", addr.addr)
+            }
+        }
+
+        break;
+    }
+
+    if timeout <= 0 {
+        return Err(VmError::IpAddressTimeout.into());
+    }
 
     Ok(dom)
 }
