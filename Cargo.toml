@@ -5,6 +5,8 @@ edition = "2024"
 
 [dependencies]
 env_logger = "0.11.10"
+hadris = "1.1.2"
+hadris-iso = { version = "1.1.2", features = ["joliet"] }
 log = "0.4.29"
 quick-xml = { version = "0.40.0", features = ["serialize"] }
 serde = { version = "1.0.228", features = ["derive"] }

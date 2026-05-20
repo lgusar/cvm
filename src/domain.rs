@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::Display, thread::sleep, time};
+use std::{error::Error, fmt::Display, path::Path, thread::sleep, time};
 
 use log::{debug, info};
 use quick_xml::se::to_string;
@@ -7,6 +7,9 @@ use virt::{
     connect::Connect, domain::Domain as VirtDomain, storage_pool::StoragePool,
     storage_vol::StorageVol, sys::VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE,
 };
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Empty {}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Os {
@@ -52,9 +55,11 @@ pub struct Driver {
 #[serde(rename = "source")]
 pub struct DiskSource {
     #[serde(rename = "@pool")]
-    pool: String,
+    pool: Option<String>,
     #[serde(rename = "@volume")]
-    volume: String,
+    volume: Option<String>,
+    #[serde(rename = "@file")]
+    file: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -71,9 +76,14 @@ pub struct DiskTarget {
 pub struct Disk {
     #[serde(rename = "@type")]
     disk_type: String,
+    #[serde(rename = "@device")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device: Option<String>,
     driver: Driver,
     source: DiskSource,
     target: DiskTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readonly: Option<Empty>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -150,6 +160,7 @@ pub fn create_vm(
     name: &str,
     pool: &StoragePool,
     volume: &StorageVol,
+    cloud_init: &Path,
 ) -> Result<VirtDomain, Box<dyn Error>> {
     debug!(
         "Creating new VM {} on storage pool {} and volume {}",
@@ -174,21 +185,44 @@ pub fn create_vm(
             count: 2,
         },
         devices: Devices {
-            disk: vec![Disk {
-                disk_type: "volume".into(),
-                driver: Driver {
-                    name: "qemu".into(),
-                    driver_type: "qcow2".into(),
+            disk: vec![
+                Disk {
+                    disk_type: "volume".into(),
+                    device: None,
+                    driver: Driver {
+                        name: "qemu".into(),
+                        driver_type: "qcow2".into(),
+                    },
+                    source: DiskSource {
+                        pool: Some(pool.get_name()?),
+                        volume: Some(volume.get_name()?),
+                        file: None,
+                    },
+                    target: DiskTarget {
+                        dev: "vda".into(),
+                        bus: "virtio".into(),
+                    },
+                    readonly: None,
                 },
-                source: DiskSource {
-                    pool: pool.get_name()?,
-                    volume: volume.get_name()?,
+                Disk {
+                    disk_type: "file".into(),
+                    device: Some("cdrom".into()),
+                    driver: Driver {
+                        name: "qemu".into(),
+                        driver_type: "raw".into(),
+                    },
+                    source: DiskSource {
+                        pool: None,
+                        volume: None,
+                        file: Some(cloud_init.display().to_string()),
+                    },
+                    target: DiskTarget {
+                        dev: "sda".into(),
+                        bus: "sata".into(),
+                    },
+                    readonly: Some(Empty {}),
                 },
-                target: DiskTarget {
-                    dev: "vda".into(),
-                    bus: "virtio".into(),
-                },
-            }],
+            ],
             interface: vec![Interface {
                 interface_type: "network".into(),
                 source: InterfaceSource {
